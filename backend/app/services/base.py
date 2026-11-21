@@ -24,7 +24,26 @@ class BaseModuleService:
         page: int = 1,
         size: int = 20,
     ) -> tuple[list[dict[str, Any]], int]:
-        rows = list(store.rows(self.MODULE))
+        return self.filter_entries(
+            list(store.rows(self.MODULE)),
+            filters=filters,
+            keyword=keyword,
+            status=status,
+            page=page,
+            size=size,
+        )
+
+    def filter_entries(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        filters: dict[str, str] | None = None,
+        keyword: str | None = None,
+        status: str | None = None,
+        page: int = 1,
+        size: int = 20,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """对已有行集合套用统一的筛选、关键字和分页规则。"""
         for field, expected in (filters or {}).items():
             if field in self.LIST_FIELDS:
                 rows = [

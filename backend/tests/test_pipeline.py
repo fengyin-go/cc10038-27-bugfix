@@ -282,6 +282,148 @@ class TestDataExport:
         assert last["export_format"] == "csv"
 
 
+class TestAggregationRevision:
+    """同名视图刷新后，交付与聚合的修订边界测试。"""
+
+    @staticmethod
+    def _prepare(pipeline, source_id, logs):
+        pipeline.register_source(source_id, "http", "default")
+        pipeline.validate_source(source_id)
+        batch = pipeline.start_ingest_batch(source_id, "2026Q1", logs)
+        batch_no = batch["batch"]["批次编号"]
+        pipeline.parse_batch(batch_no)
+        pipeline.validate_entities(batch_no)
+        return batch_no
+
+    def test_refresh_appends_revision_instead_of_leaving_old_row(self, pipeline):
+        self._prepare(pipeline, "rev-src", [
+            {"body": "t1|INFO|a"},
+            {"body": "t2|WARN|b"},
+        ])
+        first = pipeline.refresh_aggregation("rev-view", "level", "time", "count")
+        second = pipeline.refresh_aggregation("rev-view", "level", "time", "count")
+
+        assert first["revision"] == 1
+        assert second["revision"] == 2
+        active = [
+            row for row in store.rows("aggregation_view")
+            if row.get("视图名称") == "rev-view"
+            and row.get("status") == "已生效"
+            and isinstance(row.get("results"), dict)
+        ]
+        assert len(active) == 1
+        assert active[0]["revision"] == 2
+
+    def test_export_reads_confirmed_revision_not_first_row(self, pipeline):
+        self._prepare(pipeline, "exp-rev-src", [{"body": "t1|INFO|a"}])
+        pipeline.refresh_aggregation("exp-rev-view", "level", "time", "count")
+        self._prepare(pipeline, "exp-rev-src-2", [{"body": "t2|WARN|b"}])
+        pipeline.refresh_aggregation("exp-rev-view", "level", "time", "count")
+
+        result = pipeline.build_export("exp-rev-view", "csv")
+        assert result["export"]["view_revision"] == 2
+        assert set(result["export"]["results"]) == {"INFO", "WARN"}
+
+    def test_download_writes_lineage_distinct_from_creation(self, pipeline):
+        self._prepare(pipeline, "dl-src", [{"body": "t1|INFO|a"}])
+        pipeline.refresh_aggregation("dl-view", "level", "time", "count")
+        export = pipeline.build_export("dl-view", "csv")["export"]
+
+        result = pipeline.download_export(export["id"])
+        assert result["ok"] is True
+        assert result["download_no"] == export["下载编号"]
+        lineage = result["lineage"]
+        assert lineage["lineage_kind"] == "download"
+        assert lineage["lineage_source"] == "downloaded_revision"
+        assert lineage["download_no"] == export["下载编号"]
+        # 重新打开同一次下载仍然按原快照，不跟随最新修订
+        reopened = pipeline.open_download(export["id"])
+        assert reopened["view_revision"] == export["view_revision"]
+        assert reopened["results_digest"] == export["results_digest"]
+
+    def test_download_keeps_old_file_after_refresh(self, pipeline):
+        self._prepare(pipeline, "keep-src", [
+            {"body": "t1|INFO|a"},
+            {"body": "t2|WARN|b"},
+        ])
+        pipeline.refresh_aggregation("keep-view", "level", "time", "count")
+        old_export = pipeline.build_export("keep-view", "csv")["export"]
+        old_results = json.loads(json.dumps(old_export["results"]))
+
+        self._prepare(pipeline, "keep-src-2", [{"body": "t3|WARN|c"}])
+        pipeline.refresh_aggregation("keep-view", "level", "time", "count")
+
+        # 刷新不会改动已经交付的快照
+        assert old_export["results"] == old_results
+        reopened = pipeline.open_download(old_export["id"])
+        assert reopened["results"] == old_results
+        # 新申请读到新修订
+        new_export = pipeline.build_export("keep-view", "csv")["export"]
+        assert new_export["view_revision"] == 2
+        assert new_export["results"]["WARN"]["count"] == 2
+
+    def test_pending_revision_not_visible_to_delivery(self, pipeline):
+        self._prepare(pipeline, "pend-src", [
+            {"body": "t1|INFO|a"},
+            {"body": "t2|WARN|b"},
+        ])
+        pipeline.refresh_aggregation("pend-view", "level", "time", "count")
+        pending = pipeline.refresh_aggregation(
+            "pend-view", "level", "time", "count", confirm=False
+        )
+        assert pending["status"] == "待生效"
+
+        during = pipeline.build_export("pend-view", "csv")["export"]
+        assert during["view_revision"] == 1
+        assert set(during["results"]) == {"INFO", "WARN"}
+
+        confirmed = pipeline.confirm_aggregation("pend-view")
+        assert confirmed["ok"] is True
+        after = pipeline.build_export("pend-view", "csv")["export"]
+        assert after["view_revision"] == confirmed["revision"]
+
+    def test_list_shows_one_row_per_view_with_actual_revision(self, pipeline):
+        self._prepare(pipeline, "list-src", [{"body": "t1|INFO|a"}])
+        pipeline.refresh_aggregation("list-view", "level", "time", "count")
+        self._prepare(pipeline, "list-src-2", [{"body": "t2|WARN|b"}])
+        pipeline.refresh_aggregation("list-view", "level", "time", "count")
+        pipeline.refresh_aggregation("list-view", "level", "time", "count", confirm=False)
+
+        states = pipeline.list_view_states()
+        rows = [state for state in states if state["视图名称"] == "list-view"]
+        assert len(rows) == 1
+        assert rows[0]["实际聚合版本"] == 2
+        assert rows[0]["已确认修订"] == 2
+        assert rows[0]["待确认修订"] == 3
+        assert rows[0]["分组数"] == 2
+
+    def test_legacy_same_name_rows_resolve_consistently(self, pipeline):
+        """历史上同名视图散落多行时，交付取到最后确认的一版，不残留旧分组。"""
+        store.rows("aggregation_view").extend([
+            {
+                "id": 9001, "视图名称": "legacy-view", "聚合维度": "level",
+                "指标定义": "count(time)", "数据源范围": "标准化明细",
+                "刷新间隔": "manual", "status": "已生效", "pending": False,
+                "abnormal": False, "results": {"INFO": {"count": 1, "sum": 0}},
+            },
+            {
+                "id": 9002, "视图名称": "legacy-view", "聚合维度": "level",
+                "指标定义": "count(time)", "数据源范围": "标准化明细",
+                "刷新间隔": "manual", "status": "已生效", "pending": False,
+                "abnormal": False,
+                "results": {
+                    "INFO": {"count": 1, "sum": 0},
+                    "WARN": {"count": 1, "sum": 0},
+                },
+            },
+        ])
+
+        result = pipeline.build_export("legacy-view", "csv")
+        assert result["ok"] is True
+        assert result["export"]["view_revision"] == 2
+        assert set(result["export"]["results"]) == {"INFO", "WARN"}
+
+
 class TestWatermarkManagement:
     """水位管理测试。"""
 

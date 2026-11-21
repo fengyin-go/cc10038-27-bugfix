@@ -188,6 +188,8 @@ export const MODULES: ModuleMeta[] = [
     actions: ["开始导出", "重试导出"],
     actionTargets: {"开始导出": "执行中", "重试导出": "执行中"},
     metrics: ["导出任务数", "已完成任务", "失败任务"],
+    extraFields: ["下载编号", "view_revision", "results_digest", "downloaded_at", "lineage_source"],
+    downloadPath: "/api/pipeline/export",
   },
   {
     key: "replay_engine",
@@ -210,6 +212,7 @@ export const MODULES: ModuleMeta[] = [
     actions: ["启用视图", "停用视图"],
     actionTargets: {"启用视图": "已生效", "停用视图": "已停用"},
     metrics: ["视图总数", "有效视图", "日均查询"],
+    extraFields: ["实际聚合版本", "已确认修订", "待确认修订", "结果摘要", "分组数", "刷新确认时间"],
   },
   {
     key: "data_lineage",

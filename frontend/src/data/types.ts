@@ -18,6 +18,10 @@ export type ModuleMeta = {
   actions: string[]
   actionTargets: Record<string, string>
   metrics: string[]
+  // 交付/聚合模块额外持久保留的字段，列表同样展示
+  extraFields?: string[]
+  // 行级下载入口对应的接口前缀（当前只有导出模块使用）
+  downloadPath?: string
 }
 
 export type PageResult = {

@@ -79,5 +79,23 @@ npm run dev
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
 
+## 聚合视图与交付修订
+
+同名聚合视图按“视图名称 + 修订”组织：刷新只追加修订，不覆盖生效修订。
+
+- `POST /api/pipeline/aggregation/refresh`：默认直接确认新修订；传
+  `"confirm": false` 时只写入 `待生效` 修订，交付入口读不到它。
+- `POST /api/pipeline/aggregation/confirm`：确认待确认修订，之后新申请才读到新修订。
+- `GET /api/pipeline/aggregation/views`：每个视图一行，带 `实际聚合版本`、
+  `已确认修订`、`待确认修订`；`GET .../views/{name}/revisions` 列出全部修订。
+- `POST /api/pipeline/export/build`：只从已确认修订取数，并把结果深拷贝成快照，
+  生成带 `下载编号`（`EXP-0001` 形式）和 `view_revision` 的可下载修订。
+- `GET /api/pipeline/export/{id}/file`：下载该快照，并回写一条
+  `lineage_kind=download` 的血缘；`GET .../export/{id}/open` 重新打开同一次下载，
+  始终返回当时内容。
+- `build_export` 时另有一条 `lineage_kind=export_created` 的血缘，两者可按
+  `下载编号` 与 `view_revision` 区分：前者说明“为什么创建”，后者说明“哪次下载”。
+- 旧导出没有这些字段时按 id 补齐下载编号，历史内容不变。
+
 领域：数据工程
 子方向：数据采集、爬虫与RPA

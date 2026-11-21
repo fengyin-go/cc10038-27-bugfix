@@ -40,14 +40,14 @@
     <table class="data-table">
       <thead>
         <tr>
-          <th v-for="column in meta.fields" :key="column">{{ column }}</th>
+          <th v-for="column in tableFields" :key="column">{{ column }}</th>
           <th>当前状态</th>
           <th>可执行动作</th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="row in rows" :key="String(row.id)" :data-testid="`row-${row.id}`" :data-status="String(row.status)">
-          <td v-for="column in meta.fields" :key="column">{{ row[column] ?? '—' }}</td>
+          <td v-for="column in tableFields" :key="column">{{ formatCell(row, column) }}</td>
           <td>{{ row.status }}</td>
           <td class="row-actions">
             <button
@@ -60,10 +60,19 @@
             >
               {{ action }}
             </button>
+            <button
+              v-if="meta.downloadPath"
+              class="link"
+              type="button"
+              :data-testid="`download-${row.id}`"
+              @click="downloadRevision(row)"
+            >
+              下载修订
+            </button>
           </td>
         </tr>
         <tr v-if="!rows.length">
-          <td :colspan="meta.fields.length + 2" class="empty-state">
+          <td :colspan="tableFields.length + 2" class="empty-state">
             暂无{{ meta.name }}数据，可先登记{{ meta.entity }}
           </td>
         </tr>
@@ -99,6 +108,7 @@ import { computed, onMounted, ref } from 'vue'
 import {
   createEntry,
   downloadEntries,
+  downloadRevisionFile,
   listEntries,
   moduleMeta,
   runAction as applyAction,
@@ -112,6 +122,8 @@ const total = ref(0)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
 const filterFields = meta.fields.slice(0, 3)
+// 列表同时展示业务字段和每次交付都持久保留的字段（下载编号、实际聚合版本等）
+const tableFields = [...meta.fields, ...(meta.extraFields ?? [])]
 const showCreate = ref(false)
 const creating = ref(false)
 const createValues = ref<Record<string, string>>({})
@@ -141,6 +153,22 @@ async function exportRows() {
     await downloadEntries(meta.key, filters.value)
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '导出失败'
+  }
+}
+
+function formatCell(row: EntryRow, column: string): string {
+  const value = row[column]
+  if (value === undefined || value === null || value === '') return '—'
+  return String(value)
+}
+
+async function downloadRevision(row: EntryRow) {
+  errorMessage.value = ''
+  try {
+    await downloadRevisionFile(Number(row.id), String(row['下载编号'] ?? row.id))
+    await reload()
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '下载失败'
   }
 }
 
